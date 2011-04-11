@@ -7,9 +7,11 @@ use RecursiveSSH;
 use Getopt::Long;
 
 my @users;
+my @logons;
 GetOptions(
-  "user=s" => \@users,
-  'help|?' => sub {HELP(0)},
+  "user=s"  => \@users,
+  "logon=s" => \@logons,
+  'help|?'  => sub {HELP(0)},
 );
 
 my (@machines) = @ARGV;
@@ -23,6 +25,19 @@ RecursiveSSH::bootstrap(
     i        => 0,
     machines => \@machines,
     person   => $person,
+    logons   => [map { [split /=/] } @logons],
+  },
+  users => sub {
+    my ($data, $machine) = @_;
+    foreach (@{$data->{logons}}) {
+      my ($regex, $user) = @$_;
+
+      if ($machine =~ /$regex/) {
+	return $user;
+      }
+    }
+
+    return;
   },
   children => sub {
     my $data = shift;
@@ -42,9 +57,7 @@ RecursiveSSH::bootstrap(
 	}
 
 	$i ? ($line[$i], 1) : ()
-      } grep {
-	! /@/
-      } `ps -C ssh -o user,command | tail -n +2 | grep -v root | grep -v -- -l | egrep '$person'`}};
+      } `ps -C ssh -o user,command | tail -n +2 | egrep '$person'`}};
     }
 
     $data->{i}++;
@@ -55,7 +68,7 @@ RecursiveSSH::bootstrap(
     my $data = shift;
     my $person = $data->{person};
 
-    if (my @lines = `who | egrep '$person' | grep -v root | grep -v -- -l | sort`) {
+    if (my @lines = `who | egrep '$person' | sort`) {
       return join('',
 	join("->", @$RecursiveSSH::hostname) . "\n",
 	map { "\t$_" } @lines,
@@ -75,6 +88,8 @@ USAGE: $0 [options] machine1 [machine2 ...]
 OPTIONS:
 --user  users to search for, multiple may be specified.  Without a user,
         searches for all non-root users.
+
+--logon logon to use for a machine.  I.e. --logon machine_regex=user_a
 
 --help  this help message
 HELP

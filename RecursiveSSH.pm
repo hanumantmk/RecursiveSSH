@@ -8,19 +8,12 @@ use Data::Dumper;
 use FileHandle;
 use IPC::Open2;
 use Sys::Hostname;
+use IO::Handle;
 
 $SIG{PIPE} = 'IGNORE';
 
 our $data;
 our $hostname = [];
-
-sub execute {
-  eval {
-    print $data->{run}->($data->{data});
-  };
-  print $@ if $@;
-  print recurse();
-}
 
 sub recurse {
   my (@pids, @readers, @writers);
@@ -30,11 +23,22 @@ sub recurse {
   my @children = eval {
     grep { ! $hosts{$_} } $data->{children}->($data->{data});
   };
-  return "Error in children: $@" if $@;
+  print "Error in children: $@" if $@;
 
   for (my $i = 0; $i < @children; $i++) {
     my $machine = $children[$i];
-    my $cmd = 'sh -c "ssh -oBatchMode=yes -oStrictHostKeyChecking=no -A ' . $machine . ' \'perl -e "\'"\'\'eval do {undef local $/; <STDIN>};\\$@ and print \\$@\'\'"\'"\' 2>&1"';
+
+    eval {
+      if (my $user = $data->{users}->($data->{data}, $machine)) {
+	$machine = join('@', $user, $machine);
+      }
+    };
+    if ($@) {
+      print "Error in users: $@";
+      next;
+    }
+
+    my $cmd = 'ssh -oBatchMode=yes -oStrictHostKeyChecking=no -A ' . $machine . ' "perl -e \'eval do {undef local $/; <STDIN>};\\$@ and print \\$@\'"';
 
     $pids[$i] = open2($readers[$i], $writers[$i], $cmd);
 
@@ -42,6 +46,11 @@ sub recurse {
     print $writer program($machine);
     close $writer;
   }
+
+  eval {
+    print $data->{run}->($data->{data});
+  };
+  print "Error in run: $@" if $@;
 
   my @output;
   for (my $i = 0; $i < @children; $i++) {
@@ -57,7 +66,8 @@ sub recurse {
     $output[$i] = "CHILD EXIT STATUS for $children[$i]: $child_exit_status\n" . $output[$i] if $child_exit_status;
   }
 
-  return @output;
+  print @output;
+  exit 0;
 }
 
 sub program {
@@ -67,7 +77,7 @@ sub program {
     $data->{header},
     Data::Dumper->new([$data],["RecursiveSSH::data"])->Deparse(1)->Dump,
     Data::Dumper->new([[@$hostname, $machine]], ["RecursiveSSH::hostname"])->Dump,
-    'execute',
+    'recurse',
   );
 
   return $program;
@@ -75,8 +85,10 @@ sub program {
 
 sub bootstrap {
   my %info = @_;
-  my ($data, $children, $run) = @info{qw(
-       data   children   run)};
+  my ($data, $children, $run, $users) = @info{qw(
+       data   children   run   users)};
+
+  $users ||= sub {};
 
   my $header = do {
     open my $fh, __FILE__;
@@ -93,9 +105,10 @@ sub bootstrap {
       children => $children,
       run      => $run,
       data     => $data,
+      users    => $users,
     }],["RecursiveSSH::data"])->Deparse(1)->Dump,
     '$hostname = [qw(' . hostname() . ')];',
-    'execute',
+    'recurse',
   );
 
   eval $string;
