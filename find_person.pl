@@ -56,7 +56,15 @@ RecursiveSSH::bootstrap(
 	  last unless ($line[$i] =~ /-/);
 	}
 
-	$i ? ($line[$i], 1) : ()
+	if ($i) {
+	  my $machine = $line[$i];
+
+	  $machine = [split /@/]->[1] if $machine =~ /@/;
+
+	  ($machine, 1);
+	} else {
+	  ()
+	}
       } `ps -C ssh -o user,command | tail -n +2 | egrep '$person'`}};
     }
 
