@@ -14,13 +14,15 @@ GetOptions(
   'help|?'  => sub {HELP(0)},
 );
 
+$SIG{INT} = \&RecursiveSSH::clean_up;
+
 my (@machines) = @ARGV;
 
 @machines or print "Please enter some machines\n" and HELP(1);
 
 my $person = @users ? join('|', @users) : '.';
 
-RecursiveSSH::bootstrap(
+my $rssh = RecursiveSSH->new({
   data => {
     i        => 0,
     machines => \@machines,
@@ -77,15 +79,21 @@ RecursiveSSH::bootstrap(
     my $person = $data->{person};
 
     if (my @lines = `who | egrep '$person' | sort`) {
-      return join('',
-	join("->", @$RecursiveSSH::hostname) . "\n",
+      print_up(join('',
+	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
 	map { "\t$_" } @lines,
-      );
-    } else {
-      return;
+      ));
     }
   },
-);
+});
+
+$rssh->connect;
+
+while (my $data = $rssh->read) {
+  warn $data;
+}
+
+$rssh->quit;
 
 sub HELP {
   my $exit = shift;

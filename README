@@ -1,1 +1,16 @@
+use RecursiveSSH;
+
+my $rssh = RecursiveSSH->new({
+  children => $sub_to_find_more_machines,
+  run      => $sub_to_run_on_remote,
+});
+
+$rssh->connect;
+
+while(my $data = $rssh->read) {
+  print $data;
+}
+
+$rssh->quit;
+
 Take a look at find_person.pl for an example script
