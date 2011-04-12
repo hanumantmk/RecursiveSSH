@@ -6,11 +6,11 @@ no warnings 'redefine';
 
 use Data::Dumper;
 use FileHandle;
-use IPC::Open2;
+use IPC::Open3;
 use Sys::Hostname;
-use IO::Handle;
 
 $SIG{PIPE} = 'IGNORE';
+$SIG{INT} = 'IGNORE';
 
 our $data;
 our $hostname = [];
@@ -38,36 +38,69 @@ sub recurse {
       next;
     }
 
-    my $cmd = 'ssh -oBatchMode=yes -oStrictHostKeyChecking=no -A ' . $machine . ' "perl -e \'eval do {undef local $/; <STDIN>};\\$@ and print \\$@\'"';
+    my $program = program($machine);
 
-    $pids[$i] = open2($readers[$i], $writers[$i], $cmd);
+    my $length = length($program);
 
-    my $writer = $writers[$i];
-    print $writer program($machine);
-    close $writer;
+    my $cmd = 'ssh -T -oBatchMode=yes -oStrictHostKeyChecking=no -A ' . $machine . ' "perl -e \'\\$l = ' . $length . '; do { \\$rt = sysread(STDIN, \\$b, \\$l - \\$r, \\$r); \\$r += \\$rt} while (\\$r < \\$l); eval \\$b; \\$@ and print \\$@\'"';
+
+    $pids[$i] = open3($writers[$i], $readers[$i], $readers[$i], $cmd);
+
+    put($writers[$i], $program);
   }
 
-  eval {
-    print $data->{run}->($data->{data});
-  };
-  print "Error in run: $@" if $@;
+  my $parent_pid = $$;
 
-  my @output;
-  for (my $i = 0; $i < @children; $i++) {
-    my $reader = $readers[$i];
-    while (my $line = <$reader>) {
-      $output[$i] .= $line;
+  if (my $pid = fork) {
+    $SIG{HUP} = sub {
+      put($_, 'c') for @writers;
+
+      waitpid($_, 0) for @pids;
+
+      exit 1;
+    };
+
+    eval {
+      print $data->{run}->($data->{data});
+    };
+    print "Error in run: $@" if $@;
+
+    my @output;
+    for (my $i = 0; $i < @children; $i++) {
+      my $reader = $readers[$i];
+
+      while (my $line = <$reader>) {
+	$output[$i] .= $line;
+      }
+
+      waitpid($pids[$i], 0);
+      my $child_exit_status = $? >> 8;
+      $output[$i] = "CHILD EXIT STATUS for $children[$i]: $child_exit_status\n" . $output[$i] if $child_exit_status;
     }
 
-    close $reader;
+    print @output;
 
-    waitpid($pids[$i], 0);
-    my $child_exit_status = $? >> 8;
-    $output[$i] = "CHILD EXIT STATUS for $children[$i]: $child_exit_status\n" . $output[$i] if $child_exit_status;
+    kill 1, $pid;
+    waitpid($pid, 0);
+
+    exit 0;
+  } else {
+    my $sub = sub {
+      kill 1, $parent_pid;
+      exit 1;
+    };
+
+    $SIG{HUP} = sub {
+      exit 0;
+    };
+
+    my $command = '';
+    while (sysread(STDIN, $command, 1) > 0) {
+      $sub->();
+      $command = '';
+    }
+    exit 0;
   }
-
-  print @output;
-  exit 0;
 }
 
 sub program {
@@ -78,9 +111,29 @@ sub program {
     Data::Dumper->new([$data],["RecursiveSSH::data"])->Deparse(1)->Dump,
     Data::Dumper->new([[@$hostname, $machine]], ["RecursiveSSH::hostname"])->Dump,
     'recurse',
-  );
+  ) . "\n";
 
   return $program;
+}
+
+sub put {
+  my ($fh, $string) = @_;
+
+  my $length = length($string);
+
+  my $wrote = 0;
+  my $counter = 0;
+  do {
+    my $w = syswrite($fh, $string, $length - $wrote, $wrote);
+    if (! defined $w) {
+      return;
+    } elsif ($w == 0) {
+      sleep 1;
+      return if $counter++ > 5;
+    }
+
+    $wrote += $w;
+  } while ($wrote < $length);
 }
 
 sub bootstrap {
