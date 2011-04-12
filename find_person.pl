@@ -89,8 +89,17 @@ my $rssh = RecursiveSSH->new({
 
 $rssh->connect;
 
+print "Users:\n";
 while (my $data = $rssh->read) {
-  warn $data;
+  print $data;
+}
+
+print "\n\nHosts:\n";
+
+$rssh->exec(sub {print_up(`hostname`)});
+
+while (my $data = $rssh->read) {
+  print $data;
 }
 
 $rssh->quit;

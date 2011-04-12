@@ -39,9 +39,10 @@ sub recurse {
     my $jump_table = {
       'quit' => $kill_sub,
       'exec' => sub {
+	my $packet = shift;
 	kill 10, $pid;
 
-	put_packet($child_fh, read_packet(\*STDIN));
+	put_packet($child_fh, $packet);
       },
       'error' => sub {
 	print_up("Error packet, dunno");
@@ -55,7 +56,7 @@ sub recurse {
 
     while (my $packet = read_packet(\*STDIN)) {
       if (my $sub = $jump_table->{$packet->{type}}) {
-	$sub->();
+	$sub->($packet);
       } else {
 	print_up("garbage on STDIN");
 	$kill_sub->();
@@ -138,7 +139,9 @@ sub recurse {
 
   my $select = IO::Select->new(@readers);
 
-  while (my @ready = $select->can_read()) {
+  while (1) {
+    my @ready = $select->can_read();
+
     foreach my $fh (@ready) {
       my $packet = read_packet($fh);
 
@@ -189,7 +192,7 @@ sub read_packet {
 sub put_packet {
   my ($fh, $packet) = @_;
 
-  my $payload = Data::Dumper->new([$packet],['packet'])->Dump();
+  my $payload = Data::Dumper->new([$packet],['packet'])->Deparse(1)->Dump();
 
   my $length = length($payload);
 
@@ -224,13 +227,17 @@ sub put {
   do {
     my $w = syswrite($fh, $string, $length - $wrote, $wrote);
     if (! defined $w) {
+      print_up("failed a syswrite: $!");
       return;
     } elsif ($w == 0) {
+      print_up("0 byte write");
       return;
     }
 
     $wrote += $w;
   } while ($wrote < $length);
+
+  return;
 }
 
 sub get {
