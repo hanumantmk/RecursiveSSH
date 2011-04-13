@@ -88,16 +88,6 @@ sub recurse {
   for (my $i = 0; $i < @children; $i++) {
     my $machine = $children[$i];
 
-    eval {
-      if (my $user = $data->{users}->($data->{data}, $machine)) {
-	$machine = join('@', $user, $machine);
-      }
-    };
-    if ($@) {
-      debug("Error in users: $@");
-      next;
-    }
-
     my $program = program($machine);
 
     my $length = length($program);

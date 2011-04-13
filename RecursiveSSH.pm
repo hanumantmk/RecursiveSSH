@@ -29,10 +29,9 @@ sub clean_up {
 
 sub new {
   my ($class, $info) = @_;
-  my ($data, $children, $users, $debug_cb, $failed_host_cb) = @{$info}{qw(
-       data   children   users   debug_cb   failed_host_cb)};
+  my ($data, $children, $debug_cb, $failed_host_cb) = @{$info}{qw(
+       data   children   debug_cb   failed_host_cb)};
 
-  $users ||= sub {};
   $debug_cb ||= sub { warn shift };
   $failed_host_cb ||= sub { warn shift };
 
@@ -50,7 +49,6 @@ sub new {
       header   => $header,
       children => $children,
       data     => $data,
-      users    => $users,
     }],["data"])->Deparse(1)->Dump,
     '$hostname = [qw(' . hostname() . ')];',
     'recurse',

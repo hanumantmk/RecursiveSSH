@@ -29,18 +29,6 @@ my $rssh = RecursiveSSH->new({
     person   => $person,
     logons   => [map { [split /=/] } @logons],
   },
-  users => sub {
-    my ($data, $machine) = @_;
-    foreach (@{$data->{logons}}) {
-      my ($regex, $user) = @$_;
-
-      if ($machine =~ /$regex/) {
-	return $user;
-      }
-    }
-
-    return;
-  },
   children => sub {
     my $data = shift;
     my @rval;
@@ -70,6 +58,20 @@ my $rssh = RecursiveSSH->new({
 	}
       } `ps -C ssh -o user,command | tail -n +2 | egrep '$person'`}};
     }
+
+    @rval = map {
+      my $machine = $_;
+
+      foreach (@{$data->{logons}}) {
+	my ($regex, $user) = @$_;
+
+	if ($machine =~ /$regex/) {
+	  $machine = join('@', $user, $machine);
+	}
+      }
+
+      $machine;
+    } @rval;
 
     $data->{i}++;
 
