@@ -7,10 +7,24 @@ my $rssh = RecursiveSSH->new({
 
 $rssh->connect;
 
-while(my $data = $rssh->read) {
-  print $data;
-}
+$rssh->exec(
+  $sub_to_run_remotely,
+  $on_read_cb,
+  $on_done_cb,
+);
+
+$rssh->exec(...); # this follows the first
+
+$rssh->loop; # consume all output from the last two execs
+
+$rssh->exec(...);
+
+$rssh->loop; # consume all output from the last exec
 
 $rssh->quit;
+
+
+
+-----------------------------------------------------------
 
 Take a look at find_person.pl for an example script

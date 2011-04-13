@@ -22,13 +22,11 @@ our @EXPORT_OK = qw(
 sub recurse {
   $SIG{PIPE} = 'IGNORE';
 
-  put_packet(\*STDOUT, { type => 'host', data => $hostname });
-
   my $child_fh;
 
   my $pid = open $child_fh, "|-";
   if (! defined $pid) {
-    print_up("Couldn't fork: $!");
+    debug("Couldn't fork: $!");
   }
 
   if ($pid) {
@@ -48,11 +46,11 @@ sub recurse {
 	push @queue, $packet;
       },
       'error' => sub {
-	print_up("Error packet, dunno");
+	debug("Error packet, dunno");
 	$kill_sub->();
       },
-      'data' => sub {
-	print_up("We shouldn't be passing data packets up");
+      'debug' => sub {
+	debug("We shouldn't be passing debug packets up");
 	$kill_sub->();
       }
     };
@@ -66,7 +64,7 @@ sub recurse {
 	if (my $sub = $jump_table->{$packet->{type}}) {
 	  $sub->($packet);
 	} else {
-	  print_up("garbage on STDIN");
+	  debug("garbage on STDIN");
 	  $kill_sub->();
 	}
       } elsif (@$writing && @queue) {
@@ -85,7 +83,7 @@ sub recurse {
   my @children = eval {
     grep { ! $hosts{$_} } $data->{children}->($data->{data});
   };
-  print_up("Error in children: $@") if $@;
+  debug("Error in children: $@") if $@;
 
   for (my $i = 0; $i < @children; $i++) {
     my $machine = $children[$i];
@@ -96,7 +94,7 @@ sub recurse {
       }
     };
     if ($@) {
-      print_up("Error in users: $@");
+      debug("Error in users: $@");
       next;
     }
 
@@ -119,13 +117,7 @@ sub recurse {
     exit 0;
   };
 
-  my $run_id = 0;
-
-  my %left = ($run_id, scalar(@children));
-
-  if (! @readers) {
-    put_packet(\*STDOUT, {type => 'done', data => $run_id});
-  }
+  my %left;
 
   my $select = IO::Select->new(\*STDIN, @readers);
 
@@ -138,19 +130,22 @@ sub recurse {
       my $packet = read_packet(\*STDIN);
 
       if ($packet->{type} ne 'exec') {
-	print_up("Bad exec packet");
+	debug("Bad exec packet");
 	$end_sub->();
       }
-      $run_id++;
-      $left{$run_id} = scalar(@children);
+      $left{$packet->{id}} = scalar(@children);
 
       put_packet($_, $packet) for @writers;
 
-      eval { $packet->{data}->($data->{data}) };
-      print_up($@) if $@;
+      eval {
+	my $r = $packet->{data}->($data->{data});
+
+	put_packet(\*STDOUT, {type => 'result', data => $r, id => $packet->{id}});
+      };
+      debug($@) if $@;
 
       if (! @readers) {
-	put_packet(\*STDOUT, {type => 'done', data => $run_id});
+	put_packet(\*STDOUT, {type => 'done', id => $packet->{id}});
       }
 
       next;
@@ -160,13 +155,13 @@ sub recurse {
       my $packet = read_packet($fh);
 
       if ($packet->{type} eq 'done') {
-	my $done_id = $packet->{data};
+	my $done_id = $packet->{id};
 	if (exists $left{$done_id}) {
 	  $left{$done_id}--;
 	} else {
-	  print_up("Something is wrong with $done_id on " . Dumper($hostname, \%left));
+	  debug("Something is wrong with $done_id on " . Dumper($hostname, \%left));
 	}
-      } elsif ($packet->{type} eq 'data' || $packet->{type} eq 'host' || $packet->{type} eq 'failed_host') {
+      } elsif ({map { $_, 1 } qw( debug failed_host result )}->{$packet->{type}}) {
 	put_packet(\*STDOUT, $packet);
       } else {
 	my $i;
@@ -190,7 +185,7 @@ sub recurse {
 
     foreach my $i (keys %left) {
       if ($left{$i} <= 0) {
-	put_packet(\*STDOUT, {type => 'done', data => $i});
+	put_packet(\*STDOUT, {type => 'done', id => $i});
 	delete $left{$i};
       }
     }
@@ -235,10 +230,10 @@ sub put_packet {
   put($fh, pack("N", $length) . $payload);
 }
 
-sub print_up {
+sub debug {
   my $string = shift;
 
-  put_packet(\*STDOUT, {type => 'data', data => $string});
+  put_packet(\*STDOUT, {type => 'debug', data => $string});
 }
 
 sub program {

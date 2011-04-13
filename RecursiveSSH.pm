@@ -29,10 +29,12 @@ sub clean_up {
 
 sub new {
   my ($class, $info) = @_;
-  my ($data, $children, $users) = @{$info}{qw(
-       data   children   users)};
+  my ($data, $children, $users, $debug_cb, $failed_host_cb) = @{$info}{qw(
+       data   children   users   debug_cb   failed_host_cb)};
 
   $users ||= sub {};
+  $debug_cb ||= sub { warn shift };
+  $failed_host_cb ||= sub { warn shift };
 
   my $header = do {
     open my $fh, $INC{'RecursiveSSH/Remote.pm'};
@@ -55,11 +57,11 @@ sub new {
   );
 
   return bless {
-    program => $string,
-    queue   => [],
-    hosts   => [],
-    failed_hosts => [],
-    events  => 0,
+    program   => $string,
+    debug_cb  => $debug_cb,
+    callbacks => { },
+    event_seq => 0,
+    failed_host_cb => $failed_host_cb,
   }, $class;
 }
 
@@ -82,30 +84,35 @@ sub connect {
   return;
 }
 
+sub loop {
+  my $self = shift;
+
+  while (%{$self->{callbacks}}) {
+    $self->_read;
+  }
+}
+
 sub _read {
   my $self = shift;
 
-  return unless ($self->{events});
-
   $self->{pid} or die "Not running";
 
-  while ($self->{events}) {
-    my $packet = read_packet($self->{out});
+  my $packet = read_packet($self->{out});
 
-    warn "in _read " . Dumper($packet) if $ENV{DEBUG};
+  if ($packet->{type} eq 'debug') {
+    $self->{debug_cb}->($packet->{data});
+  } elsif ($packet->{type} eq 'failed_host') {
+    $self->{failed_host_cb}->($packet->{data});
+  } elsif ($packet->{type} eq 'done') {
+    my $id = $packet->{id};
 
-    if ($packet->{type} eq 'data') {
-      push @{$self->{queue}}, $packet->{data};
-    } elsif ($packet->{type} eq 'host') {
-      push @{$self->{hosts}}, $packet->{data};
-    } elsif ($packet->{type} eq 'failed_host') {
-      push @{$self->{failed_hosts}}, $packet->{data};
-    } elsif ($packet->{type} eq 'done') {
-      $self->{events}--;
-    } else {
-      warn Dumper($packet);
-      die "Shouldn't be here";
-    }
+    $self->{callbacks}->{$id}->{on_done}->() if $self->{callbacks}->{$id}->{on_done};
+    delete($self->{callbacks}->{$id});
+  } elsif ($packet->{type} eq 'result') {
+    $self->{callbacks}->{$packet->{id}}->{on_read}->($packet->{data}) if $self->{callbacks}->{$packet->{id}}->{on_read};
+  } else {
+    warn Dumper($packet);
+    die "Shouldn't be here";
   }
 
   return;
@@ -124,37 +131,21 @@ sub quit {
   delete $_INSTANCES{refaddr($self)};
 }
 
-sub hosts {
-  my $self = shift;
-
-  $self->_read;
-
-  return @{$self->{hosts}};
-}
-
-sub failed_hosts {
-  my $self = shift;
-
-  $self->_read;
-
-  return @{$self->{failed_hosts}};
-}
-
 sub exec {
-  my ($self, $sub) = @_;
+  my ($self, $sub, $read_sub, $done_sub) = @_;
 
   $self->{pid} or die "Not running";
 
-  $self->{events}++;
+  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq} });
 
-  put_packet($self->{in}, { type => 'exec', data => $sub });
+  $self->{callbacks}->{$self->{event_seq}} = {
+    on_read => $read_sub,
+    on_done => $done_sub,
+  };
 
-  $self->_read;
+  $self->{event_seq}++;
 
-  my $queue = delete $self->{queue};
-  $self->{queue} = [];
-
-  return join('', @$queue);
+  return;
 }
 
 sub DESTROY {

@@ -75,45 +75,62 @@ my $rssh = RecursiveSSH->new({
 
     return @rval;
   },
+  failed_host_cb => sub { print "FAILED HOST: " . join('->', @{$_[0]}) . "\n" },
 });
 
 $rssh->connect;
 
-print "Hosts:\n";
-print map { join('->', @$_) . "\n" } $rssh->hosts;
+$rssh->exec(
+  sub { $RecursiveSSH::Remote::hostname; },
+  sub { print "HOST: " . join('->', @{$_[0]}) . "\n" },
+  sub { print "\n\nHosts all finished...\n\n" },
+);
 
-print "\n\nFailed Hosts:\n";
-print map { join('->', @$_) . "\n" } $rssh->failed_hosts;
+$rssh->loop;
 
-print "\n\nUsers:\n";
+$rssh->exec(
+  sub {
+    my $data = shift;
+    my $person = $data->{person};
 
-print $rssh->exec(sub {
-  my $data = shift;
-  my $person = $data->{person};
+    if (my @lines = `who | egrep '$person' | sort`) {
+      return(join('',
+	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+	map { "\t$_" } @lines,
+      ));
+    }
 
-  if (my @lines = `who | egrep '$person' | sort`) {
-    print_up(join('',
-      join("->", @$RecursiveSSH::Remote::hostname) . "\n",
-      map { "\t$_" } @lines,
-    ));
-  }
-});
+    return;
+  },
+  sub {
+    my $output = shift;
+    print "WHO: " . $output . "\n" if defined $output;
+  },
+);
 
-print "\n\nConnections:\n";
+$rssh->exec(
+  sub {
+    my $data = shift;
+    my $person = $data->{person};
 
-print $rssh->exec(sub {
-  my $data = shift;
-  my $person = $data->{person};
+    if (my @lines = `ps -C ssh -o user,command | tail -n +2 | egrep '$person' | grep -v sysread`) {
+      return(join('',
+	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+	map { "\t$_" } @lines,
+      ));
+    }
 
-  if (my @lines = `ps -C ssh -o user,command | tail -n +2 | egrep '$person' | grep -v sysread`) {
-    print_up(join('',
-      join("->", @$RecursiveSSH::Remote::hostname) . "\n",
-      map { "\t$_" } @lines,
-    ));
-  }
-});
+    return;
+  },
+  sub {
+    my $output = shift;
+    print "CONNECTIONS: " . $output . "\n" if defined $output;
+  },
+);
 
-$rssh->quit;
+$rssh->loop;
+
+exit 0;
 
 sub HELP {
   my $exit = shift;
