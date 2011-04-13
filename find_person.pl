@@ -51,6 +51,7 @@ my $rssh = RecursiveSSH->new({
       @rval = @{$data->{machines}};
     } else {
       @rval = keys %{{map {
+	chomp;
 	my @line = split /\s+/;
 
         my $i;
@@ -74,33 +75,43 @@ my $rssh = RecursiveSSH->new({
 
     return @rval;
   },
-  run => sub {
-    my $data = shift;
-    my $person = $data->{person};
-
-    if (my @lines = `who | egrep '$person' | sort`) {
-      print_up(join('',
-	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
-	map { "\t$_" } @lines,
-      ));
-    }
-  },
 });
 
 $rssh->connect;
 
-print "Users:\n";
-while (my $data = $rssh->read) {
-  print $data;
-}
+print "Hosts:\n";
+print map { join('->', @$_) . "\n" } $rssh->hosts;
 
-print "\n\nHosts:\n";
+print "\n\nFailed Hosts:\n";
+print map { join('->', @$_) . "\n" } $rssh->failed_hosts;
 
-$rssh->exec(sub {print_up(`hostname`)});
+print "\n\nUsers:\n";
 
-while (my $data = $rssh->read) {
-  print $data;
-}
+print $rssh->exec(sub {
+  my $data = shift;
+  my $person = $data->{person};
+
+  if (my @lines = `who | egrep '$person' | sort`) {
+    print_up(join('',
+      join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+      map { "\t$_" } @lines,
+    ));
+  }
+});
+
+print "\n\nConnections:\n";
+
+print $rssh->exec(sub {
+  my $data = shift;
+  my $person = $data->{person};
+
+  if (my @lines = `ps -C ssh -o user,command | tail -n +2 | egrep '$person' | grep -v sysread`) {
+    print_up(join('',
+      join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+      map { "\t$_" } @lines,
+    ));
+  }
+});
 
 $rssh->quit;
 

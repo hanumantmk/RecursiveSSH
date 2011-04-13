@@ -29,8 +29,8 @@ sub clean_up {
 
 sub new {
   my ($class, $info) = @_;
-  my ($data, $children, $run, $users) = @{$info}{qw(
-       data   children   run   users)};
+  my ($data, $children, $users) = @{$info}{qw(
+       data   children   users)};
 
   $users ||= sub {};
 
@@ -47,7 +47,6 @@ sub new {
     Data::Dumper->new([{
       header   => $header,
       children => $children,
-      run      => $run,
       data     => $data,
       users    => $users,
     }],["data"])->Deparse(1)->Dump,
@@ -57,6 +56,10 @@ sub new {
 
   return bless {
     program => $string,
+    queue   => [],
+    hosts   => [],
+    failed_hosts => [],
+    events  => 0,
   }, $class;
 }
 
@@ -74,24 +77,38 @@ sub connect {
 
   $_INSTANCES{refaddr($self)} = $self;
 
+  $self->{events}++;
+
   return;
 }
 
-sub read {
+sub _read {
   my $self = shift;
+
+  return unless ($self->{events});
 
   $self->{pid} or die "Not running";
 
-  my $packet = read_packet($self->{out});
+  while ($self->{events}) {
+    my $packet = read_packet($self->{out});
 
-  if ($packet->{type} eq 'data') {
-    return $packet->{data};
-  } elsif ($packet->{type} eq 'done') {
-    return undef;
-  } else {
-    warn Dumper($packet);
-    die "Shouldn't be here";
+    warn "in _read " . Dumper($packet) if $ENV{DEBUG};
+
+    if ($packet->{type} eq 'data') {
+      push @{$self->{queue}}, $packet->{data};
+    } elsif ($packet->{type} eq 'host') {
+      push @{$self->{hosts}}, $packet->{data};
+    } elsif ($packet->{type} eq 'failed_host') {
+      push @{$self->{failed_hosts}}, $packet->{data};
+    } elsif ($packet->{type} eq 'done') {
+      $self->{events}--;
+    } else {
+      warn Dumper($packet);
+      die "Shouldn't be here";
+    }
   }
+
+  return;
 }
 
 sub quit {
@@ -107,12 +124,37 @@ sub quit {
   delete $_INSTANCES{refaddr($self)};
 }
 
+sub hosts {
+  my $self = shift;
+
+  $self->_read;
+
+  return @{$self->{hosts}};
+}
+
+sub failed_hosts {
+  my $self = shift;
+
+  $self->_read;
+
+  return @{$self->{failed_hosts}};
+}
+
 sub exec {
   my ($self, $sub) = @_;
 
   $self->{pid} or die "Not running";
 
+  $self->{events}++;
+
   put_packet($self->{in}, { type => 'exec', data => $sub });
+
+  $self->_read;
+
+  my $queue = delete $self->{queue};
+  $self->{queue} = [];
+
+  return join('', @$queue);
 }
 
 sub DESTROY {

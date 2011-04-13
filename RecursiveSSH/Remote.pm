@@ -22,6 +22,8 @@ our @EXPORT_OK = qw(
 sub recurse {
   $SIG{PIPE} = 'IGNORE';
 
+  put_packet(\*STDOUT, { type => 'host', data => $hostname });
+
   my $child_fh;
 
   my $pid = open $child_fh, "|-";
@@ -31,6 +33,8 @@ sub recurse {
 
   if ($pid) {
     $0 = 'RecursiveSSH Parent';
+
+    my @queue;
     my $kill_sub = sub {
       kill 1, $pid;
       exit 0;
@@ -40,9 +44,8 @@ sub recurse {
       'quit' => $kill_sub,
       'exec' => sub {
 	my $packet = shift;
-	kill 10, $pid;
 
-	put_packet($child_fh, $packet);
+	push @queue, $packet;
       },
       'error' => sub {
 	print_up("Error packet, dunno");
@@ -54,14 +57,24 @@ sub recurse {
       }
     };
 
-    while (my $packet = read_packet(\*STDIN)) {
-      if (my $sub = $jump_table->{$packet->{type}}) {
-	$sub->($packet);
-      } else {
-	print_up("garbage on STDIN");
-	$kill_sub->();
+    my $read  = IO::Select->new(\*STDIN);
+    my $write = IO::Select->new($child_fh);
+
+    while (my ($reading, $writing) = IO::Select->select($read, $write, undef)) {
+      if (@$reading) {
+	my $packet = read_packet(\*STDIN);
+	if (my $sub = $jump_table->{$packet->{type}}) {
+	  $sub->($packet);
+	} else {
+	  print_up("garbage on STDIN");
+	  $kill_sub->();
+	}
+      } elsif (@$writing && @queue) {
+	put_packet($child_fh, shift @queue);
       }
     }
+
+    $kill_sub->();
   }
   $0 = 'RecursiveSSH Child';
 
@@ -106,57 +119,80 @@ sub recurse {
     exit 0;
   };
 
-  eval { $data->{run}->($data->{data}) };
-  print_up($@) if $@;
+  my $run_id = 0;
 
-  my $dones = 0;
-
-  $SIG{USR1} = sub {
-    my $packet = read_packet(\*STDIN);
-
-    if ($packet->{type} ne 'exec') {
-      print_up("Bad exec packet");
-      $end_sub->();
-    }
-    $dones = 0;
-
-    put_packet($_, $packet) for @writers;
-
-    eval { $packet->{data}->() };
-    print_up($@) if $@;
-
-    if (! @readers) {
-      put_packet(\*STDOUT, {type => 'done'});
-    }
-  };
+  my %left = ($run_id, scalar(@children));
 
   if (! @readers) {
-    put_packet(\*STDOUT, {type => 'done'});
-    while (1) {
-      sleep 10;
-    }
+    put_packet(\*STDOUT, {type => 'done', data => $run_id});
   }
 
-  my $select = IO::Select->new(@readers);
+  my $select = IO::Select->new(\*STDIN, @readers);
 
   while (1) {
     my @ready = $select->can_read();
+
+    if ($ready[0] == \*STDIN) {
+      shift @ready;
+
+      my $packet = read_packet(\*STDIN);
+
+      if ($packet->{type} ne 'exec') {
+	print_up("Bad exec packet");
+	$end_sub->();
+      }
+      $run_id++;
+      $left{$run_id} = scalar(@children);
+
+      put_packet($_, $packet) for @writers;
+
+      eval { $packet->{data}->($data->{data}) };
+      print_up($@) if $@;
+
+      if (! @readers) {
+	put_packet(\*STDOUT, {type => 'done', data => $run_id});
+      }
+
+      next;
+    }
 
     foreach my $fh (@ready) {
       my $packet = read_packet($fh);
 
       if ($packet->{type} eq 'done') {
-	$dones++;
-      } elsif ($packet->{type} eq 'data') {
+	my $done_id = $packet->{data};
+	if (exists $left{$done_id}) {
+	  $left{$done_id}--;
+	} else {
+	  print_up("Something is wrong with $done_id on " . Dumper($hostname, \%left));
+	}
+      } elsif ($packet->{type} eq 'data' || $packet->{type} eq 'host' || $packet->{type} eq 'failed_host') {
 	put_packet(\*STDOUT, $packet);
       } else {
-	print_up("Invalid packet: " . Dumper($packet));
-	$end_sub->();
+	my $i;
+	for ($i = 0; $i < scalar(@readers); $i++) {
+	  $fh == $readers[$i] and last;
+	}
+
+	$select->remove($fh);
+
+	my $machine = splice @children, $i, 1;
+	my $pid     = splice @pids, $i, 1;
+	waitpid($pid, 0);
+	splice @readers, $i, 1;
+	splice @writers, $i, 1;
+
+	$left{$_}-- for keys %left;
+
+        put_packet(\*STDOUT, { type => 'failed_host', data => [@$hostname, $machine]});
       }
     }
 
-    if ($dones == scalar(@readers)) {
-      put_packet(\*STDOUT, {type => 'done'});
+    foreach my $i (keys %left) {
+      if ($left{$i} <= 0) {
+	put_packet(\*STDOUT, {type => 'done', data => $i});
+	delete $left{$i};
+      }
     }
   }
 }
@@ -227,10 +263,8 @@ sub put {
   do {
     my $w = syswrite($fh, $string, $length - $wrote, $wrote);
     if (! defined $w) {
-      print_up("failed a syswrite: $!");
       return;
     } elsif ($w == 0) {
-      print_up("0 byte write");
       return;
     }
 
