@@ -45,20 +45,21 @@ sub new {
 
   my $string = join("\n",
     $header,
+    'RecursiveSSH::Remote->new(',
     Data::Dumper->new([{
-      header   => $header,
-      children => $children,
-      data     => $data,
-    }],["data"])->Deparse(1)->Dump,
-    '$hostname = [qw(' . hostname() . ')];',
-    'recurse',
+      header        => $header,
+      find_children => $children,
+      data          => $data,
+      hostname      => [hostname()],
+    }])->Deparse(1)->Terse(1)->Dump,
+    ')->_recurse;',
   );
 
   return bless {
-    program   => $string,
-    debug_cb  => $debug_cb,
-    callbacks => { },
-    event_seq => 0,
+    program        => $string,
+    debug_cb       => $debug_cb,
+    callbacks      => { },
+    event_seq      => 0,
     failed_host_cb => $failed_host_cb,
   }, $class;
 }
@@ -95,22 +96,24 @@ sub _read {
 
   $self->{pid} or die "Not running";
 
-  my $packet = read_packet($self->{out});
-
-  if ($packet->{type} eq 'debug') {
-    $self->{debug_cb}->($packet->{data});
-  } elsif ($packet->{type} eq 'failed_host') {
-    $self->{failed_host_cb}->($packet->{data});
-  } elsif ($packet->{type} eq 'done') {
+  if (my $packet = read_packet($self->{out})) {
     my $id = $packet->{id};
 
-    $self->{callbacks}->{$id}->{on_done}->() if $self->{callbacks}->{$id}->{on_done};
-    delete($self->{callbacks}->{$id});
-  } elsif ($packet->{type} eq 'result') {
-    $self->{callbacks}->{$packet->{id}}->{on_read}->($packet->{data}) if $self->{callbacks}->{$packet->{id}}->{on_read};
+    if ($packet->{type} eq 'debug') {
+      $self->{debug_cb}->($packet->{data});
+    } elsif ($packet->{type} eq 'failed_host') {
+      $self->{failed_host_cb}->($packet->{data});
+    } elsif ($packet->{type} eq 'done') {
+      $self->{callbacks}->{$id}->{on_done}->() if $self->{callbacks}->{$id}->{on_done};
+      delete($self->{callbacks}->{$id});
+    } elsif ($packet->{type} eq 'result') {
+      $self->{callbacks}->{$id}->{on_read}->($packet->{data}) if $self->{callbacks}->{$id}->{on_read};
+    } else {
+      warn Dumper($packet);
+      die "Unknown packet type";
+    }
   } else {
-    warn Dumper($packet);
-    die "Shouldn't be here";
+    die "Couldn't get a packet back from read_packet";
   }
 
   return;

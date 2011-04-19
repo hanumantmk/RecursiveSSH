@@ -30,7 +30,9 @@ my $rssh = RecursiveSSH->new({
     logons   => [map { [split /=/] } @logons],
   },
   children => sub {
-    my $data = shift;
+    my $self = shift;
+
+    my $data = $self->data;
     my @rval;
 
     my $person = $data->{person};
@@ -83,7 +85,7 @@ my $rssh = RecursiveSSH->new({
 $rssh->connect;
 
 $rssh->exec(
-  sub { $RecursiveSSH::Remote::hostname; },
+  sub { $_[0]->hostname },
   sub { print "HOST: " . join('->', @{$_[0]}) . "\n" },
   sub { print "\n\nHosts all finished...\n\n" },
 );
@@ -92,12 +94,15 @@ $rssh->loop;
 
 $rssh->exec(
   sub {
-    my $data = shift;
+    my $self = shift;
+
+    my $data = $self->data;
+
     my $person = $data->{person};
 
     if (my @lines = `who | egrep '$person' | sort`) {
       return(join('',
-	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+	join("->", @{$self->hostname}) . "\n",
 	map { "\t$_" } @lines,
       ));
     }
@@ -112,12 +117,15 @@ $rssh->exec(
 
 $rssh->exec(
   sub {
-    my $data = shift;
+    my $self = shift;
+
+    my $data = $self->data;
+
     my $person = $data->{person};
 
     if (my @lines = `ps -C ssh -o user,command | tail -n +2 | egrep '$person' | grep -v sysread`) {
       return(join('',
-	join("->", @$RecursiveSSH::Remote::hostname) . "\n",
+	join("->", @{$self->hostname}) . "\n",
 	map { "\t$_" } @lines,
       ));
     }

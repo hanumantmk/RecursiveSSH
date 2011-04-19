@@ -6,9 +6,7 @@ use warnings;
 use Data::Dumper;
 use IPC::Open3;
 use IO::Select;
-
-our $data;
-our $hostname = [];
+use List::Util qw( first );
 
 use base 'Exporter';
 
@@ -19,97 +17,112 @@ our @EXPORT_OK = qw(
   put
 );
 
-sub recurse {
-  $SIG{PIPE} = 'IGNORE';
+sub new {
+  my ($class, $options) = @_;
 
-  my $child_fh;
+  $options ||= {};
 
-  my $pid = open $child_fh, "|-";
-  if (! defined $pid) {
-    debug("Couldn't fork: $!");
-  }
+  my $self = bless $options, $class;
 
-  if ($pid) {
-    $0 = 'RecursiveSSH Parent';
+  return $self;
+}
 
-    my @queue;
-    my $kill_sub = sub {
-      kill 1, $pid;
-      exit 0;
-    };
+sub data { $_[0]->{data} }
+sub hostname { $_[0]->{hostname} }
 
-    my $jump_table = {
-      'quit' => $kill_sub,
-      'exec' => sub {
-	my $packet = shift;
+sub _build_children {
+  my $self = shift;
 
-	push @queue, $packet;
-      },
-      'error' => sub {
-	debug("Error packet, dunno");
-	$kill_sub->();
-      },
-      'debug' => sub {
-	debug("We shouldn't be passing debug packets up");
-	$kill_sub->();
-      }
-    };
+  my %hosts = map { $_, 1 } @{$self->{hostname}};
 
-    my $read  = IO::Select->new(\*STDIN);
-    my $write = IO::Select->new($child_fh);
-
-    while (my ($reading, $writing) = IO::Select->select($read, $write, undef)) {
-      if (@$reading) {
-	my $packet = read_packet(\*STDIN);
-	if (my $sub = $jump_table->{$packet->{type}}) {
-	  $sub->($packet);
-	} else {
-	  debug("garbage on STDIN");
-	  $kill_sub->();
-	}
-      } elsif (@$writing && @queue) {
-	put_packet($child_fh, shift @queue);
-      }
-    }
-
-    $kill_sub->();
-  }
-  $0 = 'RecursiveSSH Child';
-
-  my (@pids, @readers, @writers);
-
-  my %hosts = map { $_, 1 } @$hostname;
-
-  my @children = eval {
-    grep { ! $hosts{$_} } $data->{children}->($data->{data});
+  my %children = eval {
+    map { $_, {} } grep { ! $hosts{$_} } $self->{find_children}->($self);
   };
-  debug("Error in children: $@") if $@;
+  debug("Error in find_children: $@") if $@;
 
-  for (my $i = 0; $i < @children; $i++) {
-    my $machine = $children[$i];
+  foreach my $machine (keys %children) {
+    my $data = $children{$machine};
 
-    my $program = program($machine);
+    my $program = $self->program($machine);
 
     my $length = length($program);
 
     my $cmd = ssh_invocation($machine, $length);
 
-    $pids[$i] = open3($writers[$i], $readers[$i], $readers[$i], $cmd);
+    $data->{pid} = open3($data->{w}, $data->{r}, $data->{r}, $cmd);
 
-    put($writers[$i], $program);
+    put($data->{w}, $program);
   }
 
-  my $end_sub = $SIG{HUP} = sub {
-    put_packet($_, {type => 'quit'}) for @writers;
+  $self->{children} = \%children;
 
-    waitpid($_, 0) for @pids;
+  return;
+}
+
+sub _recurse_parent {
+  my ($self, $child_fh, $kill_sub) = @_;
+
+  $0 = 'RecursiveSSH Parent';
+
+  my @queue;
+
+  my $jump_table = {
+    'quit' => $kill_sub,
+    'exec' => sub {
+      my $packet = shift;
+
+      push @queue, $packet;
+    },
+    'error' => sub {
+      debug("Error packet, dunno");
+      $kill_sub->();
+    },
+    'debug' => sub {
+      debug("We shouldn't be passing debug packets up");
+      $kill_sub->();
+    }
+  };
+
+  my $read  = IO::Select->new(\*STDIN);
+  my $write = IO::Select->new($child_fh);
+
+  while (my ($reading, $writing) = IO::Select->select($read, $write, undef)) {
+    if (@$reading) {
+      my $packet = read_packet(\*STDIN);
+      if (my $sub = $jump_table->{$packet->{type}}) {
+	$sub->($packet);
+      } else {
+	debug("garbage on STDIN");
+	$kill_sub->();
+      }
+    } elsif (@$writing && @queue) {
+      put_packet($child_fh, shift @queue);
+    }
+  }
+
+  $kill_sub->();
+}
+
+sub _recurse_child {
+  my $self = shift;
+
+  $0 = 'RecursiveSSH Child';
+
+  $self->_build_children;
+
+  my $children = $self->{children};
+
+  my $end_sub = $SIG{HUP} = sub {
+    put_packet($_->{w}, {type => 'quit'}) for values %$children;
+
+    waitpid($_->{pid}, 0) for values %$children;
 
     exit 0;
   };
 
   my %left;
 
-  my $select = IO::Select->new(\*STDIN, @readers);
+  my $select = IO::Select->new(\*STDIN, map { $_->{r} } values %$children);
 
   while (1) {
     my @ready = $select->can_read();
@@ -123,18 +136,21 @@ sub recurse {
 	debug("Bad exec packet");
 	$end_sub->();
       }
-      $left{$packet->{id}} = scalar(@children);
 
-      put_packet($_, $packet) for @writers;
+      if (%$children) {
+	$left{$packet->{id}} = {map { $_, 1 } keys %$children};
+
+	put_packet($_->{w}, $packet) for values %$children;
+      }
 
       eval {
-	my $r = $packet->{data}->($data->{data});
+	my $r = $packet->{data}->($self);
 
 	put_packet(\*STDOUT, {type => 'result', data => $r, id => $packet->{id}});
       };
       debug($@) if $@;
 
-      if (! @readers) {
+      if (! %$children) {
 	put_packet(\*STDOUT, {type => 'done', id => $packet->{id}});
       }
 
@@ -142,42 +158,68 @@ sub recurse {
     }
 
     foreach my $fh (@ready) {
+      my $machine = first { $children->{$_}{r} == $fh } keys %$children;
+
       my $packet = read_packet($fh);
 
       if ($packet->{type} eq 'done') {
 	my $done_id = $packet->{id};
 	if (exists $left{$done_id}) {
-	  $left{$done_id}--;
+	  delete $left{$done_id}{$machine};
 	} else {
-	  debug("Something is wrong with $done_id on " . Dumper($hostname, \%left));
+	  debug("Something is wrong with $done_id on " . Dumper($self->{hostname}, \%left));
 	}
-      } elsif ({map { $_, 1 } qw( debug failed_host result )}->{$packet->{type}}) {
+      } elsif (grep { $packet->{type} eq $_ } qw( debug failed_host result )) {
 	put_packet(\*STDOUT, $packet);
       } else {
-	my $i;
-	for ($i = 0; $i < scalar(@readers); $i++) {
-	  $fh == $readers[$i] and last;
-	}
-
 	$select->remove($fh);
 
-	my $machine = splice @children, $i, 1;
-	my $pid     = splice @pids, $i, 1;
-	waitpid($pid, 0);
-	splice @readers, $i, 1;
-	splice @writers, $i, 1;
+	waitpid($children->{$machine}{pid}, 0);
+	delete $children->{$machine};
+	delete $left{$_}{$machine} for keys %left;
 
-	$left{$_}-- for keys %left;
-
-        put_packet(\*STDOUT, { type => 'failed_host', data => [@$hostname, $machine]});
+        put_packet(\*STDOUT, { type => 'failed_host', data => [@{$self->{hostname}}, $machine]});
       }
     }
 
-    foreach my $i (keys %left) {
-      if ($left{$i} <= 0) {
-	put_packet(\*STDOUT, {type => 'done', id => $i});
-	delete $left{$i};
+    foreach my $id (keys %left) {
+      if (! %{$left{$id}}) {
+	put_packet(\*STDOUT, {type => 'done', id => $id});
+	delete $left{$id};
       }
+    }
+  }
+}
+
+sub _recurse {
+  my $self = shift;
+
+  $SIG{PIPE} = 'IGNORE';
+
+  my $child_fh;
+
+  my $pid = open $child_fh, "|-";
+  if (! defined $pid) {
+    debug("Couldn't fork: $!");
+  }
+
+  if ($pid) {
+    my $kill_sub = sub {
+      kill 1, $pid;
+      exit 0;
+    };
+
+    eval { $self->_recurse_parent($child_fh, $kill_sub) };
+    if ($@) {
+      debug("parent died: $@");
+      $kill_sub->();
+    }
+    exit 0;
+  } else {
+    eval { $self->_recurse_child() };
+    if ($@) {
+      debug("child died: $@");
+      exit 0;
     }
   }
 }
@@ -227,13 +269,18 @@ sub debug {
 }
 
 sub program {
-  my $machine = shift;
+  my ($self, $machine) = @_;
 
   my $program = join("\n",
-    $data->{header},
-    Data::Dumper->new([$data],["data"])->Deparse(1)->Dump,
-    Data::Dumper->new([[@$hostname, $machine]], ["hostname"])->Dump,
-    'recurse',
+    $self->{header},
+    'RecursiveSSH::Remote->new(',
+    Data::Dumper->new([{
+      header        => $self->{header},
+      find_children => $self->{find_children},
+      data          => $self->{data},
+      hostname      => [@{$self->{hostname}}, $machine],
+    }])->Deparse(1)->Terse(1)->Dump(),
+    ')->_recurse;',
   ) . "\n";
 
   return $program;
