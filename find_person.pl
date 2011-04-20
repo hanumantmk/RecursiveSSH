@@ -52,9 +52,13 @@ my $rssh = RecursiveSSH->new({
 	if ($i) {
 	  my $machine = $line[$i];
 
-	  $machine = [split /@/]->[1] if $machine =~ /@/;
+	  $machine = [split /@/, $machine]->[1] if $machine =~ /@/;
 
-	  ($machine, 1);
+	  if ($machine =~ /['"]/) {
+	    ()
+	  } else {
+	    ($machine, 1);
+	  }
 	} else {
 	  ()
 	}

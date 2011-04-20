@@ -45,14 +45,13 @@ sub new {
 
   my $string = join("\n",
     $header,
-    'RecursiveSSH::Remote->new(',
     Data::Dumper->new([{
       header        => $header,
       find_children => $children,
       data          => $data,
       hostname      => [hostname()],
-    }])->Deparse(1)->Terse(1)->Dump,
-    ')->_recurse;',
+    }], ['EVAL'])->Deparse(1)->Purity(1)->Dump,
+    'RecursiveSSH::Remote->new($EVAL)->_recurse;',
   );
 
   return bless {
@@ -137,7 +136,7 @@ sub exec {
 
   $self->{pid} or die "Not running";
 
-  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq} });
+  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq}, src => [], dest => 'broadcast' });
 
   $self->{callbacks}->{$self->{event_seq}} = {
     on_read => $read_sub,

@@ -17,6 +17,8 @@ our @EXPORT_OK = qw(
   put
 );
 
+our $EVAL;
+
 sub new {
   my ($class, $options) = @_;
 
@@ -66,7 +68,7 @@ sub _recurse_parent {
 
   my @queue;
 
-  my $jump_table = {
+  my $jump_for_me = {
     'quit' => $kill_sub,
     'exec' => sub {
       my $packet = shift;
@@ -89,7 +91,7 @@ sub _recurse_parent {
   while (my ($reading, $writing) = IO::Select->select($read, $write, undef)) {
     if (@$reading) {
       my $packet = read_packet(\*STDIN);
-      if (my $sub = $jump_table->{$packet->{type}}) {
+      if (my $sub = $jump_for_me->{$packet->{type}}) {
 	$sub->($packet);
       } else {
 	debug("garbage on STDIN");
@@ -97,10 +99,101 @@ sub _recurse_parent {
       }
     } elsif (@$writing && @queue) {
       put_packet($child_fh, shift @queue);
+    } else {
+      $read->can_read;
     }
   }
 
   $kill_sub->();
+}
+
+sub route_info_for_packet {
+  my ($self, $packet) = @_;
+
+  my $src = $packet->{src};
+
+  my $dest = $packet->{dest};
+
+  if (ref $dest eq 'ARRAY') {
+    my %route;
+
+    my $me = $self->hostname;
+
+    my $me_len = scalar(@$me);
+
+    HOST: foreach my $host (@$dest) {
+      my $host_len = scalar(@$host);
+
+      if ($host_len < $me_len) {
+	push @{$route{''}}, $host;
+	next;
+      }
+
+      for (my $i = 0; $i < $me_len; $i++) {
+	if ($host->[$i] ne $me->[$i]) {
+	  push @{$route{''}}, $host;
+	  next HOST;
+	}
+      }
+
+      if ($host_len > $me_len) {
+	push @{$route{$host->[$me_len]}}, $host;
+      }
+    }
+
+    return \%route;
+  } elsif ($dest eq 'broadcast') {
+    return 'broadcast';
+  } else {
+    debug("invalid dest: $dest for packet: " . Dumper($packet));
+    return;
+  }
+}
+
+sub needs_routing {
+  my ($self, $packet) = @_;
+
+  if (grep { $packet->{type} eq $_ } qw( error debug failed_host )) {
+    return 1;
+  } else {
+    my $route = $self->route_info_for_packet($packet);
+    return 1 if ($route eq 'broadcast' || (ref $route eq 'HASH' && %$route));
+  }
+
+  return 0;
+}
+
+sub for_me {
+  my ($self, $packet) = @_;
+
+  return 0 if (grep { $packet->{type} eq $_ } qw( error debug failed_host ));
+
+  my $me = $self->hostname;
+
+  my $me_len = scalar(@$me);
+
+  my $dest = $packet->{dest};
+
+  if (ref $dest eq 'ARRAY') {
+    HOST: foreach my $host (@$dest) {
+      my $host_len = scalar(@$host);
+
+      next if $host_len != $me_len;
+
+      for (my $i = 0; $i < $me_len; $i++) {
+	next HOST if ($host->[$i] ne $me->[$i]);
+      }
+
+      return 1;
+    }
+
+    return;
+  } elsif ($dest eq 'broadcast') {
+    return 1;
+  } else {
+    debug("invalid dest: $dest for packet: " . Dumper($packet));
+    return;
+  }
 }
 
 sub _recurse_child {
@@ -120,81 +213,145 @@ sub _recurse_child {
     exit 0;
   };
 
-  my %left;
+  my %execs;
 
-  my $select = IO::Select->new(\*STDIN, map { $_->{r} } values %$children);
+  my %world = (%$children, '', { r => \*STDIN, w => \*STDOUT });
 
-  while (1) {
-    my @ready = $select->can_read();
+  my %jump_for_me = (
+    done => sub {
+      my ($packet, $machine) = @_;
 
-    if ($ready[0] == \*STDIN) {
-      shift @ready;
+      my $id = $packet->{id};
 
-      my $packet = read_packet(\*STDIN);
-
-      if ($packet->{type} ne 'exec') {
-	debug("Bad exec packet");
-	$end_sub->();
+      if (exists $execs{$id}) {
+	delete $execs{$id}{running}{$machine};
+      } else {
+	debug("Something is wrong with $id on " . Dumper($self->hostname, \%execs));
+	return;
       }
-
-      if (%$children) {
-	$left{$packet->{id}} = {map { $_, 1 } keys %$children};
-
-	put_packet($_->{w}, $packet) for values %$children;
-      }
+    },
+    exec => sub {
+      my ($packet, $machine) = @_;
 
       eval {
 	my $r = $packet->{data}->($self);
 
-	put_packet(\*STDOUT, {type => 'result', data => $r, id => $packet->{id}});
+	put_packet($world{$machine}{w}, {type => 'result', data => $r, id => $packet->{id}, dest => [$packet->{src}], src => $self->hostname}) if defined $r;
       };
       debug($@) if $@;
+    },
+  );
 
-      if (! %$children) {
-	put_packet(\*STDOUT, {type => 'done', id => $packet->{id}});
-      }
+  my %jump_for_dispatch = (
+    debug       => sub { my $packet = shift; put_packet(\*STDOUT, $packet) },
+    error       => sub { my $packet = shift; put_packet(\*STDOUT, $packet) },
+    failed_host => sub { my $packet = shift; put_packet(\*STDOUT, $packet) },
+    result => sub {
+      my ($packet, $machine) = @_;
 
-      next;
-    }
+      my $route = $self->route_info_for_packet($packet);
 
-    foreach my $fh (@ready) {
-      my $machine = first { $children->{$_}{r} == $fh } keys %$children;
-
-      my $packet = read_packet($fh);
-
-      if ($packet->{type} eq 'done') {
-	my $done_id = $packet->{id};
-	if (exists $left{$done_id}) {
-	  delete $left{$done_id}{$machine};
-	} else {
-	  debug("Something is wrong with $done_id on " . Dumper($self->{hostname}, \%left));
+      if (ref $route eq 'HASH') {
+	foreach my $m (keys %$route) {
+	  put_packet($world{$m}{w}, {%$packet, dest => $route->{$m}});
 	}
-      } elsif (grep { $packet->{type} eq $_ } qw( debug failed_host result )) {
-	put_packet(\*STDOUT, $packet);
-      } else {
-	$select->remove($fh);
-
-	waitpid($children->{$machine}{pid}, 0);
-	delete $children->{$machine};
-	delete $left{$_}{$machine} for keys %left;
-
-        put_packet(\*STDOUT, { type => 'failed_host', data => [@{$self->{hostname}}, $machine]});
+      } elsif ($route eq 'broadcast') {
+	debug("Can't broadcast results");
       }
+    },
+    exec => sub {
+      my ($packet, $machine) = @_;
+
+      my $route = $self->route_info_for_packet($packet);
+
+      my @workers;
+      if ($route eq 'broadcast') {
+	@workers = keys %$children;
+      } elsif (ref $route eq 'HASH') {
+	@workers = keys %$route;
+      }
+
+      my @hostname = @{$self->hostname};
+
+      if ($machine eq '') {
+	pop @hostname;
+      } else {
+	push @hostname, $machine;
+      }
+
+      my $return_dest = [\@hostname];
+
+      $execs{$packet->{id}} = {
+	running => {map { $_, 1 } @workers},
+	dest    => $return_dest,
+	orig    => $machine,
+      };
+
+      foreach my $w (@workers) {
+	my $dest = $route eq 'broadcast' ? 'broadcast' : $route->{$w};
+	put_packet($world{$w}{w}, {%$packet, dest => $dest});
+      }
+    },
+  );
+
+  my $select = IO::Select->new(map { $_->{r} } values %world);
+
+  while (1) {
+    my ($fh) = $select->can_read();
+
+    my $machine = first { $world{$_}{r} == $fh } keys %world;
+
+    my $packet = read_packet($fh);
+    if ($packet && $packet->{type} ne 'error') {
+      if ($self->needs_routing($packet)) {
+	if (my $sub = $jump_for_dispatch{$packet->{type}}) {
+	  $sub->($packet, $machine);
+	} else {
+	  debug("No logic to route packet: " . Dumper($packet));
+	}
+      }
+
+      if ($self->for_me($packet)) {
+	if (my $sub = $jump_for_me{$packet->{type}}) {
+	  $sub->($packet, $machine);
+	} else {
+	  debug("No logic to locally handle: " . Dumper($packet));
+	}
+      }
+
+    } else {
+      $select->remove($fh);
+
+      waitpid($children->{$machine}{pid}, 0);
+      delete $world{$machine};
+      delete $children->{$machine};
+      delete $execs{$_}{running}{$machine} for keys %execs;
+
+      put_packet(\*STDOUT, { type => 'failed_host', data => [@{$self->hostname}, $machine]});
     }
 
-    foreach my $id (keys %left) {
-      if (! %{$left{$id}}) {
-	put_packet(\*STDOUT, {type => 'done', id => $id});
-	delete $left{$id};
+    foreach my $id (keys %execs) {
+      if (! %{$execs{$id}{running}}) {
+	if (my $w = $world{$execs{$id}{orig}}) {
+	  put_packet($w->{w}, {type => 'done', id => $id, dest => $execs{$id}{dest}, src => $self->hostname});
+	}
+	delete $execs{$id};
       }
     }
   }
+
+  exit 0;
 }
 
 sub _recurse {
   my $self = shift;
 
   $SIG{PIPE} = 'IGNORE';
+  $SIG{__WARN__} = sub {
+    my $line = shift;
+
+    debug("WARNING: $line");
+  };
 
   my $child_fh;
 
@@ -233,6 +390,7 @@ sub read_packet {
     return {
       type => 'error',
       data => "couldn't read header",
+      dest => [[]],
     }
   }
 
@@ -243,11 +401,13 @@ sub read_packet {
     return {
       type => 'error',
       data => "couldn't read data",
+      dest => [[]],
     }
   }
 
   my $packet;
   eval $data;
+  $@ and debug("read_packet broke: $@\n" . Dumper($data));
 
   return $packet;
 }
@@ -255,7 +415,12 @@ sub read_packet {
 sub put_packet {
   my ($fh, $packet) = @_;
 
-  my $payload = Data::Dumper->new([$packet],['packet'])->Deparse(1)->Dump();
+  if (! defined $fh) {
+    debug("No defined fh! " . Dumper($packet));
+    return;
+  }
+
+  my $payload = Data::Dumper->new([$packet],['packet'])->Deparse(1)->Purity(1)->Dump();
 
   my $length = length($payload);
 
@@ -265,7 +430,7 @@ sub put_packet {
 sub debug {
   my $string = shift;
 
-  put_packet(\*STDOUT, {type => 'debug', data => $string});
+  put_packet(\*STDOUT, {type => 'debug', data => $string, dest => [[]]});
 }
 
 sub program {
@@ -273,14 +438,13 @@ sub program {
 
   my $program = join("\n",
     $self->{header},
-    'RecursiveSSH::Remote->new(',
     Data::Dumper->new([{
       header        => $self->{header},
       find_children => $self->{find_children},
       data          => $self->{data},
       hostname      => [@{$self->{hostname}}, $machine],
-    }])->Deparse(1)->Terse(1)->Dump(),
-    ')->_recurse;',
+    }], ['EVAL'])->Deparse(1)->Purity(1)->Dump(),
+    'RecursiveSSH::Remote->new($EVAL)->_recurse;',
   ) . "\n";
 
   return $program;
