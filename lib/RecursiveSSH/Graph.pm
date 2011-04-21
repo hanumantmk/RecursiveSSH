@@ -1,11 +1,71 @@
 package RecursiveSSH::Graph;
 
+=pod
+
+=head1 NAME
+
+RecursiveSSH::Graph
+
+=head1 SYNOPSIS
+
+my $graph = RecursiveSSH::Graph->new({
+  info => {
+    $node_name => $actual_address_to_ssh_to
+  },
+  edges => [
+    [ $node_or_arrayref_of_nodes => $cost, $node_or_arrayref_of_nodes ],
+    [ foo => 3, "bar" ],
+    [ [ "bar", "baz" ] => 5, "bop" ],
+    [ bop => 10, ["zop", "zap"]],
+  ],
+});
+
+my $r = RecursiveSSH->new({graph => $graph});
+
+my $dest = $graph->dest_for_vertex("foo");
+
+$r->exec_on($dest, ...);
+
+=head1 DESCRIPTION
+
+Supplies RecursiveSSH with a child function that will traverse a single source
+shortest path subtree given the current hostname and a set of edges.  Provides
+a few utility functions such as dest_for_vertex for use with these graphs.
+
+Uses Graph for the graph functions (SPT_Dijkstra and SP_Bellman_Ford).
+
+=head1 METHODS
+
+=over 4
+
+=cut
+
 use strict;
 use warnings;
 
 use Sys::Hostname;
 
 use Graph;
+
+=item $class->new({})
+
+Arguments like:
+{
+  info => {
+    $node_name => $actual_address_to_ssh_to
+  },
+  edges => [
+    [ $node_or_arrayref_of_nodes => $cost, $node_or_arrayref_of_nodes ],
+    [ foo => 3, "bar" ],
+    [ [ "bar", "baz" ] => 5, "bop" ],
+    [ bop => 10, ["zop", "zap"]],
+  ],
+}
+
+Returns back a graph object which can be passed to RecursiveSSH in place of a
+children function.
+
+=cut
 
 sub new {
   my ($class, $options) = @_;
@@ -18,6 +78,13 @@ sub new {
 
   return $self;
 }
+
+=item $self->dest_for_vertex($vertex)
+
+Given a vertex (machine name), provide a dest pattern for it.  This will be the
+path from the source to that node (it's RecursiveSSH addressing).
+
+=cut
 
 sub dest_for_vertex {
   my ($self, $vertex) = @_;
@@ -48,6 +115,13 @@ sub init_graph {
 
   return;
 }
+
+=item $self->for_data()
+
+Returns a simplified single source shortest subtree for RecursiveSSH.  Also a
+good debugging tool to see what the graph looks like.
+
+=cut
 
 sub for_data {
   my ($self, $vertex) = @_;
@@ -122,37 +196,7 @@ sub graph_children {
 
 =pod
 
-=head1 NAME
-
-RecursiveSSH::Graph
-
-=head1 SYNOPSIS
-
-my $graph = RecursiveSSH::Graph({
-  info => {
-    $node_name => $actual_address_to_ssh_to
-  },
-  edges => [
-    [ $node_or_arrayref_of_nodes => $cost, $node_or_arrayref_of_nodes ],
-    [ foo => 3, "bar" ],
-    [ [ "bar", "baz" ] => 5, "bop" ],
-    [ bop => 10, ["zop", "zap"]],
-  ],
-});
-
-my $r = RecursiveSSH->new({graph => $graph});
-
-my $dest = $graph->dest_for_vertex("foo");
-
-$r->exec_on($dest, ...);
-
-=head1 DESCRIPTION
-
-Supplies RecursiveSSH with a child function that will traverse a single source
-shortest path subtree given the current hostname and a set of edges.  Provides
-a few utility functions such as dest_for_vertex for use with these graphs.
-
-Uses Graph for the graph functions (SPT_Dijkstra and SP_Bellman_Ford).
+=back
 
 =head1 AUTHOR
 

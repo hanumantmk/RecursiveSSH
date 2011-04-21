@@ -1,0 +1,9 @@
+Changes
+examples/find_person.pl
+examples/run_on.pl
+lib/RecursiveSSH.pm
+lib/RecursiveSSH/Graph.pm
+lib/RecursiveSSH/Remote.pm
+Makefile.PL
+MANIFEST			This list of files
+README

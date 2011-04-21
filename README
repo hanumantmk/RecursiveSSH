@@ -1,7 +1,7 @@
 use RecursiveSSH;
 
 my $rssh = RecursiveSSH->new({
-  children => $sub_to_find_more_machines,
+  children => $sub  # called with the RecursiveSSH::Remote object
 });
 
 $rssh->connect;
@@ -22,8 +22,10 @@ $rssh->loop; # consume all output from the last exec
 
 $rssh->quit;
 
-
-
 -----------------------------------------------------------
 
-Take a look at find_person.pl for an example script
+LICENSE:
+
+Copyright (c) 2011 Jason Carey. All rights reserved.
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.

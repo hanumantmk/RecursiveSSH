@@ -1,5 +1,56 @@
 package RecursiveSSH;
 
+our $VERSION = 1.001;
+
+=pod
+
+=head1 NAME
+
+RecursiveSSH
+
+=head1 SYNOPSIS
+
+my $rssh = RecursiveSSH->new({
+  children => $sub  # called with the RecursiveSSH::Remote object
+});
+
+$rssh->connect;
+
+$rssh->exec(
+  $sub_to_run_remotely,
+  $on_read_cb,
+  $on_done_cb,
+);
+
+$rssh->exec(...); # this follows the first
+
+$rssh->loop; # consume all output from the last two execs
+
+$rssh->exec(...);
+
+$rssh->loop; # consume all output from the last exec
+
+$rssh->quit;
+
+=head1 DESCRIPTION
+
+Provides a function for recursively traversing a network with ssh and agent
+forwarding and then running commands on those remote nodes.  Largely
+asynchronous, allows for the injection of multiple execs, in broadcast or with
+destination, followed by a blocking collect.
+
+The network shouldn't leave any garbage (zombie processes) if nodes die or if
+processes hang.  It is also possible to shut the network down very rapidly if
+needed (a multi-process model on each machine allows one process that
+constantly waits for commands that can signal a second that carries out
+execution).
+
+=head1 METHODS
+
+=over 4
+
+=cut
+
 use strict;
 use warnings;
 
@@ -26,6 +77,20 @@ sub clean_up {
     $rssh->quit;
   }
 }
+
+=item $class->new({...})
+
+Arguments to new are like this:
+{
+  children       => $recursive_sub,
+  debug_cb       => $callback_for_debug_packets,
+  failed_host_cb => $callback_for_failed_host_packets,
+
+}
+
+Provides an object which wraps the whole recurisve ssh tree.
+
+=cut
 
 sub new {
   my ($class, $info) = @_;
@@ -62,7 +127,7 @@ sub new {
       data          => $data,
       hostname      => [hostname()],
     }], ['EVAL'])->Deparse(1)->Purity(1)->Dump,
-    'RecursiveSSH::Remote->new($EVAL)->_recurse;',
+    'RecursiveSSH::Remote->new($EVAL)->recurse;',
   );
 
   return bless {
@@ -73,6 +138,12 @@ sub new {
     failed_host_cb => $failed_host_cb,
   }, $class;
 }
+
+=item $self->connect()
+
+Starts the recursion and brings up the network.
+
+=cut
 
 sub connect {
   my $self = shift;
@@ -92,6 +163,12 @@ sub connect {
 
   return;
 }
+
+=item $self->loop()
+
+Runs until all outstanding execs have finished.  This is blocking
+
+=cut
 
 sub loop {
   my $self = shift;
@@ -129,6 +206,12 @@ sub _read {
   return;
 }
 
+=item $self->quit
+
+Closes down the network.  This is reasonably graceful.
+
+=cut
+
 sub quit {
   my $self = shift;
 
@@ -142,6 +225,14 @@ sub quit {
   delete $_INSTANCES{refaddr($self)};
 }
 
+=item $self->exec(...)
+
+Same as exec_on, only broadcasts to all nodes in the network
+
+See exec_on
+
+=cut
+
 sub exec {
   my $self = shift;
 
@@ -149,6 +240,21 @@ sub exec {
 
   return;
 }
+
+=item $self->exec_on($dest, $sub, $read_cb, $done_cb)
+
+Runs $sub on all machines noted by $dest.  Calls $read_cb per response and
+$done_cb when no more responses are coming.
+
+$dest is like this:
+[
+  [ 'path', 'to', 'machine' ],
+  [ 'path', 'to', 'machine2' ],
+]
+
+$sub receives the RecursiveSSH::Remote object as it's argument
+
+=cut
 
 sub exec_on {
   my ($self, $dest, $sub, $read_sub, $done_sub) = @_;
@@ -174,3 +280,17 @@ sub DESTROY {
 }
 
 1;
+
+=pod
+
+=back
+
+=head1 AUTHOR
+
+Jason Carey
+
+=head1 SEE ALSO
+
+L<RecursiveSSH::Graph>, L<RecursiveSSH::Remote>
+
+=cut

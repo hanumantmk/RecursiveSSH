@@ -1,5 +1,40 @@
 package RecursiveSSH::Remote;
 
+=pod
+
+=head1 NAME
+
+RecursiveSSH::Remote
+
+=head1 SYNOPSIS
+
+my $remote = RecursiveSSH::Remote->new({
+  header        => $stringification # of RecursiveSSH::Remote,
+  find_children => $children_sub,
+  data          => $local_storage_for_children,
+  hostname      => $arrayref_of_hops,
+});
+
+$remote->recurse;
+
+=head1 DESCRIPTION
+
+An object capable of bootstrapping itself onto other machines via piping into a
+perl eval.  Holds a find_children function which is used to find additional
+children.  Exists as a parent child fork pair which allows the parent to
+collect writes from above and transmit to the child when the child is ready (or
+signal in the case of control packets).
+
+After the initial sprawl out based on $find_children, parent and child settle
+into their own select loops which involve forwarding packets and acting on
+execs.
+
+=head1 METHODS
+
+=over 4
+
+=cut
+
 use strict;
 use warnings;
 
@@ -19,6 +54,20 @@ our @EXPORT_OK = qw(
 
 our $EVAL;
 
+=item $class->new({})
+
+Arguments are: {
+  header        => $stringification # of RecursiveSSH::Remote,
+  find_children => $children_sub,
+  data          => $local_storage_for_children,
+  hostname      => $arrayref_of_hops,
+}
+
+Provides a new object on the remote side to communicate with and access in
+callbacks.
+
+=cut
+
 sub new {
   my ($class, $options) = @_;
 
@@ -29,7 +78,20 @@ sub new {
   return $self;
 }
 
+=item $self->data()
+
+Getter for the data member
+
+=cut
+
 sub data { $_[0]->{data} }
+
+=item $self->hostname()
+
+Getter for the hostname member
+
+=cut
+
 sub hostname { $_[0]->{hostname} }
 
 sub _build_children {
@@ -352,7 +414,13 @@ sub _recurse_child {
   exit 0;
 }
 
-sub _recurse {
+=item $self->recurse()
+
+The main method which triggers recursion and initiates the main select loop
+
+=cut
+
+sub recurse {
   my $self = shift;
 
   $SIG{PIPE} = 'IGNORE';
@@ -390,6 +458,20 @@ sub _recurse {
   }
 }
 
+=pod
+
+=back
+
+=head1 FUNCTIONS
+
+=over 4
+
+=item read_packet($fh)
+
+reads a packet off the specified file handle
+
+=cut
+
 sub read_packet {
   my $fh = shift;
 
@@ -420,6 +502,12 @@ sub read_packet {
 
   return $packet;
 }
+
+=item put_packet($fh, $packet)
+
+Puts a packet onto the specified file handle
+
+=cut
 
 sub put_packet {
   my ($fh, $packet) = @_;
@@ -453,11 +541,17 @@ sub program {
       data          => $self->{data},
       hostname      => [@{$self->{hostname}}, $machine],
     }], ['EVAL'])->Deparse(1)->Purity(1)->Dump(),
-    'RecursiveSSH::Remote->new($EVAL)->_recurse;',
+    'RecursiveSSH::Remote->new($EVAL)->recurse;',
   ) . "\n";
 
   return $program;
 }
+
+=item put($fh, $string);
+
+puts the specified string onto $fh with syswrite
+
+=cut
 
 sub put {
   my ($fh, $string) = @_;
@@ -478,6 +572,12 @@ sub put {
 
   return;
 }
+
+=item get($fh, $length)
+
+sysreads $length from $fh.
+
+=cut
 
 sub get {
   my ($fh, $length) = @_;
@@ -502,10 +602,23 @@ sub get {
   return $buf;
 }
 
+=item slave_invocation($length)
+
+Provides an invocation of perl that can be bootstrapped by writing $length
+bytes of program to it.
+
+=cut
+
 sub slave_invocation {
   my $length = shift;
   return 'perl -e \'$l = ' . $length . '; do { $rt = sysread(STDIN, $b, $l - $r, $r); $r += $rt} while ($r < $l); eval $b; $@ and print $@\'';
 }
+
+=item ssh_invocation($machine, $length)
+
+Provides an ssh invocation which can be bootstrapped by writing $length bytes to it.
+
+=cut
 
 sub ssh_invocation {
   my ($machine, $length) = @_;
@@ -518,3 +631,17 @@ sub ssh_invocation {
 }
 
 1;
+
+=pod
+
+=back
+
+=head1 AUTHOR
+
+Jason Carey
+
+=head1 SEE ALSO
+
+L<RecursiveSSH>
+
+=cut
