@@ -217,6 +217,24 @@ sub _recurse_child {
 
   my %world = (%$children, '', { r => \*STDIN, w => \*STDOUT });
 
+  my $add_exec_entry = sub {
+    my ($packet, $machine) = @_;
+
+    my @hostname = @{$self->hostname};
+
+    if ($machine eq '') {
+      pop @hostname;
+    } else {
+      push @hostname, $machine;
+    }
+
+    $execs{$packet->{id}} = {
+      orig    => $machine,
+      dest    => [\@hostname],
+      running => {},
+    };
+  };
+
   my %jump_for_me = (
     done => sub {
       my ($packet, $machine) = @_;
@@ -238,7 +256,10 @@ sub _recurse_child {
 
 	put_packet($world{$machine}{w}, {type => 'result', data => $r, id => $packet->{id}, dest => [$packet->{src}], src => $self->hostname}) if defined $r;
       };
+
       debug($@) if $@;
+
+      $add_exec_entry->($packet, $machine) unless $execs{$packet->{id}};
     },
   );
 
@@ -271,21 +292,9 @@ sub _recurse_child {
 	@workers = keys %$route;
       }
 
-      my @hostname = @{$self->hostname};
+      $add_exec_entry->($packet, $machine);
 
-      if ($machine eq '') {
-	pop @hostname;
-      } else {
-	push @hostname, $machine;
-      }
-
-      my $return_dest = [\@hostname];
-
-      $execs{$packet->{id}} = {
-	running => {map { $_, 1 } @workers},
-	dest    => $return_dest,
-	orig    => $machine,
-      };
+      $execs{$packet->{id}}{running} = {map { $_, 1 } @workers};
 
       foreach my $w (@workers) {
 	my $dest = $route eq 'broadcast' ? 'broadcast' : $route->{$w};

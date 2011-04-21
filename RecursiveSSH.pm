@@ -29,11 +29,11 @@ sub clean_up {
 
 sub new {
   my ($class, $info) = @_;
-  my ($data, $children, $debug_cb, $failed_host_cb) = @{$info}{qw(
-       data   children   debug_cb   failed_host_cb)};
+  my ($data, $graph, $children, $debug_cb, $failed_host_cb) = @{$info}{qw(
+       data   graph   children   debug_cb   failed_host_cb)};
 
   $debug_cb ||= sub { warn shift };
-  $failed_host_cb ||= sub { warn shift };
+  $failed_host_cb ||= sub { warn join("->", @{$_[0]})};
 
   my $header = do {
     open my $fh, $INC{'RecursiveSSH/Remote.pm'};
@@ -42,6 +42,17 @@ sub new {
     close $fh;
     $c;
   };
+
+  if ($graph) {
+    die "Graph must be a RecursiveSSH::Graph" unless $graph->isa("RecursiveSSH::Graph");
+
+    if ($children) {
+      die "Cannot have graph and children";
+    }
+    $data->{_graph} = $graph->for_data();
+
+    $children = \&RecursiveSSH::Graph::graph_children;
+  }
 
   my $string = join("\n",
     $header,
@@ -132,11 +143,19 @@ sub quit {
 }
 
 sub exec {
-  my ($self, $sub, $read_sub, $done_sub) = @_;
+  my $self = shift;
+
+  $self->exec_on('broadcast', @_);
+
+  return;
+}
+
+sub exec_on {
+  my ($self, $dest, $sub, $read_sub, $done_sub) = @_;
 
   $self->{pid} or die "Not running";
 
-  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq}, src => [], dest => 'broadcast' });
+  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq}, src => [], dest => $dest });
 
   $self->{callbacks}->{$self->{event_seq}} = {
     on_read => $read_sub,
