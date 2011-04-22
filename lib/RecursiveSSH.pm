@@ -1,6 +1,9 @@
 package RecursiveSSH;
 
-our $VERSION = 1.001;
+use strict;
+use warnings;
+
+our $VERSION = 0.001;
 
 =pod
 
@@ -50,9 +53,6 @@ execution).
 =over 4
 
 =cut
-
-use strict;
-use warnings;
 
 use Data::Dumper;
 use IPC::Open3;

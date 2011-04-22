@@ -1,5 +1,10 @@
 package RecursiveSSH::Graph;
 
+use strict;
+use warnings;
+
+our $VERSION = 0.001;
+
 =pod
 
 =head1 NAME
@@ -39,9 +44,6 @@ Uses Graph for the graph functions (SPT_Dijkstra and SP_Bellman_Ford).
 =over 4
 
 =cut
-
-use strict;
-use warnings;
 
 use Sys::Hostname;
 

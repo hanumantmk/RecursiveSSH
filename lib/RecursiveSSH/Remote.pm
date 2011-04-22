@@ -1,5 +1,10 @@
 package RecursiveSSH::Remote;
 
+use strict;
+use warnings;
+
+our $VERSION = 0.001;
+
 =pod
 
 =head1 NAME
@@ -34,9 +39,6 @@ execs.
 =over 4
 
 =cut
-
-use strict;
-use warnings;
 
 use Data::Dumper;
 use IPC::Open3;
@@ -590,10 +592,10 @@ sub get {
 
     if (! defined $r) {
 #TODO what to do here?
-      return undef;
+      return;
     } elsif ($r == 0) {
 #TODO where do we get this?
-      return undef;
+      return;
     } else {
       $read += $r;
     }
