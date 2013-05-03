@@ -316,7 +316,7 @@ sub _recurse_child {
       my ($packet, $machine) = @_;
 
       eval {
-	my $r = $packet->{data}->($self);
+	my $r = $packet->{data}{exec}->($self, @{$packet->{data}{args}});
 
 	put_packet($world{$machine}{w}, {type => 'result', data => $r, id => $packet->{id}, dest => [$packet->{src}], src => $self->hostname}) if defined $r;
       };

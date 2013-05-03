@@ -90,6 +90,7 @@ $rssh->connect;
 
 $rssh->exec(
   sub { $_[0]->hostname },
+  [],
   sub { print "HOST: " . join('->', @{$_[0]}) . "\n" },
   sub { print "\n\nHosts all finished...\n\n" },
 );
@@ -113,6 +114,7 @@ $rssh->exec(
 
     return;
   },
+  [],
   sub {
     my $output = shift;
     print "WHO: " . $output . "\n" if defined $output;
@@ -136,6 +138,7 @@ $rssh->exec(
 
     return;
   },
+  [],
   sub {
     my $output = shift;
     print "CONNECTIONS: " . $output . "\n" if defined $output;

@@ -1,0 +1,11 @@
+{
+    info => {
+        deve1 => 'jcarey@deve1.cheetahmail.com',
+        jcarey => 'jcarey.cheetahmail.com',
+    },
+    edges => [
+        [jcarey => 1, 'deve1'],
+        [deve1 => 1, 'jb01'],
+        [jb01 => 1, 'web03'],
+    ],
+}

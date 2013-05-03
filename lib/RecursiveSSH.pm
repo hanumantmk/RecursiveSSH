@@ -257,11 +257,11 @@ $sub receives the RecursiveSSH::Remote object as it's argument
 =cut
 
 sub exec_on {
-  my ($self, $dest, $sub, $read_sub, $done_sub) = @_;
+  my ($self, $dest, $sub, $args, $read_sub, $done_sub) = @_;
 
   $self->{pid} or die "Not running";
 
-  put_packet($self->{in}, { type => 'exec', data => $sub, id => $self->{event_seq}, src => [], dest => $dest });
+  put_packet($self->{in}, { type => 'exec', data => { exec => $sub, args => $args }, id => $self->{event_seq}, src => [], dest => $dest });
 
   $self->{callbacks}->{$self->{event_seq}} = {
     on_read => $read_sub,

@@ -151,6 +151,7 @@ sub process_node {
     if (exists $self->{info}{$node}) {
       $self->{info}{$node};
     } else {
+      $self->{info}{$node} = $node;
       $node;
     }
   }

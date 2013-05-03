@@ -1,9 +1,8 @@
 #!/usr/bin/perl -w
 
-use strict;
-
 use RecursiveSSH;
 use RecursiveSSH::Graph;
+use RecursiveSSH::Shell;
 
 use Getopt::Long;
 
@@ -15,10 +14,6 @@ GetOptions(
 );
 
 $graph_file or print "Please provide a graph file\n" and HELP(1);
-
-my @machines = @ARGV;
-
-@machines or print "Please provide some machines to run on\n" and HELP(1);
 
 $SIG{INT} = \&RecursiveSSH::clean_up;
 
@@ -44,18 +39,9 @@ my $rssh = RecursiveSSH->new({
 
 $rssh->connect;
 
-$rssh->exec_on(
-  [ map { $graph->dest_for_vertex($_) } @machines ],
-  sub { [$_[0]->hostname, `who | perl -nle 'print [split /\\s+/]->[0]' | sort -u`] },
-  [],
-  sub {
-    my $r = shift;
-    my $host = shift @$r;
-    print "HOST: " . join('->', @$host) . "\n";
-    print "\t$_" for @$r;
-  },
-  sub { print "\n\nHosts all finished...\n\n" },
-);
+my $shell = RecursiveSSH::Shell->new($rssh, $graph);
+
+$shell->cmdloop();
 
 $rssh->loop;
 
