@@ -42,6 +42,7 @@ execs.
 
 use Data::Dumper;
 use IPC::Open3;
+use IPC::Open2;
 use IO::Select;
 use List::Util qw( first );
 

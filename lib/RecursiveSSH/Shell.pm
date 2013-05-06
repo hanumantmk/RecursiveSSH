@@ -8,7 +8,8 @@ use base 'Term::Shell';
 sub catch_run {
     my ($o, @stuff) = @_;
 
-    print join("", $o->run_on_ctx( sub { my ($self, @stuff) = @_; my @x = `@stuff 2>&1`; @x}, @stuff));
+    print join("", $o->magic_pipe($o->line()));
+#    print join("", $o->run_on_ctx( sub { my ($self, @stuff) = @_; my @x = `@stuff 2>&1`; @x}, @stuff));
 }
 
 sub comp_ {
@@ -140,19 +141,97 @@ sub comp_cd {
     );
 }
 
+sub magic_pipe {
+    my ($o, $line) = @_;
+
+    my @commands = map {
+        my $ctx = $o->{SHELL}{ctx};
+        my $cmd = $_;
+
+        if (/^\s*!\s*(\S+)\s+(.+)/) {
+            $ctx = $1;
+            $cmd = $2;
+        }
+
+        [$ctx, $cmd];
+    } split /@\|@/, $line;
+
+    my $r;
+
+    for (my $i = 0; $i < @commands; $i++) {
+        my ($ctx, $cmd) = @{$commands[$i]};
+
+        if ($i == 0) {
+           ($r) = $o->run_on($ctx, sub { my ($self, $cmd) = @_; return scalar `$cmd` }, $cmd);
+        } else {
+           ($r) = $o->run_on($ctx, sub {
+               my ($self, $cmd, $data) = @_;
+
+               my ($in, $out);
+
+               my $pid = IPC::Open2::open2($out, $in, $cmd);
+
+               my $s = IO::Select->new();
+
+               $s->add($in, $out);
+
+               my $written = 0;
+               my $read = 0;
+               my $buf = '';
+
+               LOOP: while (1) {
+                   while (length($data) > $written && $s->can_write) {
+                       $written += syswrite($in, $data, length($data) - $written, $written);
+                   }
+
+                   if (length($data) == $written) {
+                       $s->remove($in);
+                       close $in;
+                   }
+
+                   while ($s->can_read) {
+                       my $r = sysread($out, $buf, 4096, $read);
+
+                       if ($r > 0) {
+                           $read += $r;
+                       } else {
+                           last LOOP;
+                       }
+                   }
+               }
+
+               waitpid( $pid, 0 );
+
+               return $buf;
+           }, $cmd, $r);
+        }
+    }
+
+    return $r;
+}
+
+sub run_magic_cp {
+    my ($o, $from, $to) = @_;
+
+    my ($from_machine, $from_path) = split /:/, $from, 2;
+    my ($to_machine, $to_path) = split /:/, $to, 2;
+
+    $o->magic_pipe("!$from_machine tar -cf - $from_path @|@ !$to_machine tar -xpf -");
+}
+
 sub prompt_str {
     my $o = shift;
 
     return $o->{SHELL}{ctx} . "> ";
 }
 
-sub run_on_ctx {
-    my ($o, $fun, @args) = @_;
+sub run_on {
+    my ($o, $ctx, $fun, @args) = @_;
 
     my @out;
 
     $o->{SHELL}{rssh}->exec_on(
-      [ $o->{SHELL}{graph}->dest_for_vertex($o->{SHELL}{ctx}) ],
+      [ $o->{SHELL}{graph}->dest_for_vertex($ctx) ],
       $fun,
       \@args,
       sub {
@@ -164,6 +243,12 @@ sub run_on_ctx {
     $o->{SHELL}{rssh}->loop();
 
     return @out;
+}
+
+sub run_on_ctx {
+    my ($o, $fun, @args) = @_;
+
+    return $o->run_on($o->{SHELL}{ctx}, $fun, @args);
 }
 
 1;
