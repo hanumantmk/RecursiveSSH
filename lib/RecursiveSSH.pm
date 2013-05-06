@@ -194,7 +194,7 @@ sub _read {
       $self->{callbacks}->{$id}->{on_done}->() if $self->{callbacks}->{$id}->{on_done};
       delete($self->{callbacks}->{$id});
     } elsif ($packet->{type} eq 'result') {
-      $self->{callbacks}->{$id}->{on_read}->($packet->{data}) if $self->{callbacks}->{$id}->{on_read};
+      $self->{callbacks}->{$id}->{on_read}->(@{$packet->{data}}) if $self->{callbacks}->{$id}->{on_read};
     } else {
       warn Dumper($packet);
       die "Unknown packet type";

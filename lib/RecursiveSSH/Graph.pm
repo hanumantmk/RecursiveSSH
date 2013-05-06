@@ -72,11 +72,9 @@ children function.
 sub new {
   my ($class, $options) = @_;
 
-  $options->{source} ||= hostname();
-
   my $self = bless $options, $class;
 
-  $self->init_graph;
+  $self->init_graph($options->{source} || hostname());
 
   return $self;
 }
@@ -84,16 +82,20 @@ sub new {
 =item $self->dest_for_vertex($vertex)
 
 Given a vertex (machine name), provide a dest pattern for it.  This will be the
-path from the source to that node (it's RecursiveSSH addressing).
+path from the source to that node (it's RecursiveSSH addressing).  Optionally a
+source other than the graph source can be passed as a second parameter
 
 =cut
 
 sub dest_for_vertex {
-  my ($self, $vertex) = @_;
+  my ($self, $vertex, $source) = @_;
 
-  $vertex = exists $self->{info}{$vertex} ? $self->{info}{$vertex} : $vertex;
+  $source ||= $self->{source};
 
-  my @path = $self->{graph}->SP_Bellman_Ford($self->{source}, $vertex);
+  $source = $self->{info}{$source};
+  $vertex = $self->{info}{$vertex};
+
+  my @path = $self->{graph}->SP_Bellman_Ford($source, $vertex);
 
   if (!@path) {
     die "unknown vertex: $vertex";
@@ -103,7 +105,7 @@ sub dest_for_vertex {
 }
 
 sub init_graph {
-  my $self = shift;
+  my ($self, $source) = @_;
 
   my $graph = Graph->new();
 
@@ -111,7 +113,15 @@ sub init_graph {
     $self->process_edge($graph, @$edge);
   }
 
-  my $spt = $graph->SPT_Dijkstra($self->{source});
+  foreach my $label (keys %{$self->{info}}) {
+      if ($self->{info}{$label} eq $source) {
+          $self->{source} = $label;
+      }
+  }
+
+  $self->{source} ||= $source;
+
+  my $spt = $graph->SPT_Dijkstra($source);
 
   $self->{graph} = $spt;
 
@@ -128,9 +138,7 @@ good debugging tool to see what the graph looks like.
 sub for_data {
   my ($self, $vertex) = @_;
 
-  $vertex ||= $self->{source};
-
-  my $info = $self->{info};
+  $vertex ||= $self->{info}{$self->{source}};
 
   return {
     node     => $vertex,

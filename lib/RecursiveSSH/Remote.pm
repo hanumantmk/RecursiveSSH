@@ -315,13 +315,17 @@ sub _recurse_child {
     exec => sub {
       my ($packet, $machine) = @_;
 
-      eval {
-	my $r = $packet->{data}{exec}->($self, @{$packet->{data}{args}});
+      my @r;
 
-	put_packet($world{$machine}{w}, {type => 'result', data => $r, id => $packet->{id}, dest => [$packet->{src}], src => $self->hostname}) if defined $r;
+      eval {
+	@r = $packet->{data}{exec}->($self, @{$packet->{data}{args}});
       };
 
-      debug($@) if $@;
+      if ($@) {
+        @r = ($@);
+      }
+
+      put_packet($world{$machine}{w}, {type => 'result', data => \@r, id => $packet->{id}, dest => [$packet->{src}], src => $self->hostname});
 
       $add_exec_entry->($packet, $machine) unless $execs{$packet->{id}};
     },
@@ -515,7 +519,7 @@ sub put_packet {
   my ($fh, $packet) = @_;
 
   if (! defined $fh) {
-    debug("No defined fh! " . Dumper($packet));
+    debug("No defined fh! " . Dumper($packet) . Dumper([caller]));
     return;
   }
 
